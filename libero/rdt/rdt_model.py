@@ -154,7 +154,7 @@ class RoboticDiffusionTransformerModel(object):
         return pred
 
     @torch.no_grad()
-    def step(self, state_vec, state_mask, images, text_embeds):
+    def step(self, state_vec, action_mask, images, text_embeds):
         """
         Predict the next action chunk given the
         proprioceptive states, images, and instruction embeddings.
@@ -226,7 +226,7 @@ class RoboticDiffusionTransformerModel(object):
         # states, state_elem_mask = states.to(device, dtype=dtype), state_elem_mask.to(device, dtype=dtype)
         # states = states[:, -1:, :]  # (1, 1, 128)
         states = torch.from_numpy(state_vec).to(device, dtype=dtype).unsqueeze(1)
-        state_mask = torch.from_numpy(state_mask).to(device, dtype=dtype).unsqueeze(1)
+        action_mask = torch.from_numpy(action_mask).to(device, dtype=dtype).unsqueeze(1)
         ctrl_freqs = torch.tensor([self.control_frequency]).to(device)
 
         text_embeds = text_embeds.to(device, dtype=dtype)
@@ -242,7 +242,7 @@ class RoboticDiffusionTransformerModel(object):
             lang_attn_mask=lang_attn_mask,
             img_tokens=image_embeds,
             state_tokens=states,
-            action_mask=state_mask,
+            action_mask=action_mask,
             ctrl_freqs=ctrl_freqs,
         )
         trajectory = trajectory.to(torch.float32)

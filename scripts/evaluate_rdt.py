@@ -192,6 +192,8 @@ def state_vec_to_action(state_vec: np.ndarray) -> np.ndarray:
     for i, key in enumerate(arm_format.split(",")):
         arm_concat[:, i] = state_vec[:, STATE_VEC_IDX_MAPPING[key]]
 
+    print("arm_concat", arm_concat[0])
+
     eef_delta_pos = arm_concat[:, 0:3]
     eef_delta_ang = arm_concat[:, 3:6]
     gripper_open = (arm_concat[:, 6:7]) * 2 - 1
@@ -294,7 +296,13 @@ class History:
             state_vec[STATE_VEC_IDX_MAPPING[key]] = arm_concat[i]
             state_mask[STATE_VEC_IDX_MAPPING[key]] = 1
 
-        return images, state_vec, state_mask
+        action_mask = np.zeros(STATE_VEC_LEN, dtype=np.float32)
+        arm_format = "eef_vel_x,eef_vel_y,eef_vel_z,eef_angular_vel_roll,eef_angular_vel_pitch,eef_angular_vel_yaw,gripper_open"
+
+        for key in arm_format.split(","):
+            action_mask[STATE_VEC_IDX_MAPPING[key]] = 1
+
+        return images, state_vec, state_mask, action_mask
 
     def save_video(self, file_path):
         save_to_video(self.agentview_image_list, file_path)
@@ -310,7 +318,7 @@ def make_policy():
     # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-170m-v2/checkpoint-72000"
     # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-1b-v3/checkpoint-36000"
     pretrained_model_name_or_path = "robotics-diffusion-transformer/rdt-1b"
-    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v1/checkpoint-23000"
+    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v1/checkpoint-5000"
 
     pretrained_text_encoder_name_or_path = "google/t5-v1_1-xxl"
     pretrained_vision_encoder_name_or_path = "google/siglip-so400m-patch14-384"
@@ -332,7 +340,7 @@ def main():
     task_suite = benchmark_dict[task_suite_name]()
 
     # retrieve a specific task
-    task_id = 0
+    task_id = 2
     task = task_suite.get_task(task_id)
     task_name = task.name
     task_description = task.language
@@ -352,12 +360,16 @@ def main():
     env.seed(0)
     env.reset()
     init_states = task_suite.get_task_init_states(task_id)
-    init_state_id = 0
+    init_state_id = 2
     obs = env.set_init_state(init_states[init_state_id])
 
     history = History()
-    history.add(obs)
-    history.add(obs)
+
+    dummy_action = np.zeros(7)
+    for step in range(20):
+        obs, reward, done, info = env.step(dummy_action)
+        if step >= 18:
+            history.add(obs)
 
     horizon = 32
 
@@ -388,13 +400,14 @@ def main():
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(text_embeds, cache_path)
 
+    succ = False
     for step in range(360):
         if step % horizon == 0:
-            images, state_vec, state_mask = history.get_model_inputs()
+            images, state_vec, state_mask, action_mask = history.get_model_inputs()
             with torch.inference_mode():
                 future_states = policy.step(
                     state_vec=state_vec[None],
-                    state_mask=state_mask[None],
+                    action_mask=action_mask[None],
                     images=images,
                     text_embeds=text_embeds,
                 ).squeeze(0).cpu().numpy()
@@ -404,9 +417,11 @@ def main():
         obs, reward, done, info = env.step(actions[step % horizon])
         history.add(obs)
 
-        if len(info) > 0:
-            print(info)
+        if done:
+            succ = True
             break
+
+    print(f"Success: {succ}")
 
     history.save_video(f"outputs/rollout.mp4")
 
