@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import os
+import hashlib
+from pathlib import Path
 
+import av
+import yaml
 import numpy as np
+import torch
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
+from libero.rdt.rdt_model import create_model
 
 STATE_VEC_IDX_MAPPING = {
     # [0, 10): right arm joint positions
@@ -150,6 +156,89 @@ def rotation_matrix_to_ortho6d(matrix: np.ndarray) -> np.ndarray:
     return ortho6d
 
 
+def normalize_vector(v: np.ndarray) -> np.ndarray:
+    v_mag = np.linalg.norm(v, ord=2, axis=-1, keepdims=True)
+    v_mag = np.maximum(v_mag, 1e-8)
+    return v / v_mag
+
+
+def ortho6d_to_rotation_matrix(ortho6d: np.ndarray) -> np.ndarray:
+    """
+    The orhto6d represents the first two column vectors a1 and a2 of the
+    rotation matrix: [ | , |,  | ]
+                     [ a1, a2, a3]
+                     [ | , |,  | ]
+    Input: (A1, ..., An, 6)
+    Output: (A1, ..., An, 3, 3)
+    """
+    x_raw = ortho6d[..., 0:3]
+    y_raw = ortho6d[..., 3:6]
+
+    x = normalize_vector(x_raw)
+    z = np.cross(x, y_raw)
+    z = normalize_vector(z)
+    y = np.cross(z, x)
+
+    matrix = np.stack([x, y, z], axis=-1)
+    return matrix
+
+
+def state_vec_to_action(state_vec: np.ndarray) -> np.ndarray:
+    batch_size = state_vec.shape[0]
+
+    arm_format = "eef_vel_x,eef_vel_y,eef_vel_z,eef_angular_vel_roll,eef_angular_vel_pitch,eef_angular_vel_yaw,gripper_open"
+
+    arm_concat = np.zeros((batch_size, len(arm_format.split(","))), dtype=np.float32)
+    for i, key in enumerate(arm_format.split(",")):
+        arm_concat[:, i] = state_vec[:, STATE_VEC_IDX_MAPPING[key]]
+
+    eef_delta_pos = arm_concat[:, 0:3]
+    eef_delta_ang = arm_concat[:, 3:6]
+    gripper_open = (arm_concat[:, 6:7]) * 2 - 1
+
+    gripper_open[gripper_open <= 0] = -1
+    gripper_open[gripper_open > 0] = 1
+
+    action = np.concatenate([eef_delta_pos, eef_delta_ang, gripper_open], axis=-1)
+    return action
+
+
+def capitalize_and_period(instr: str) -> str:
+    """
+    Capitalize the first letter of a string and add a period to the end if it's not there.
+    """
+    if len(instr) > 0:
+        # if the first letter is not capital, make it so
+        if not instr[0].isupper():
+            # if the first letter is not capital, make it so
+            instr = instr[0].upper() + instr[1:]
+        # add period to the end if it's not there
+        if instr[-1] != '.':
+            # add period to the end if it's not there
+            instr = instr + '.'
+    return instr
+
+
+def save_to_video(frames, filename):
+    container = av.open(filename, mode="w")
+    stream = container.add_stream("libx264", rate=30)
+    stream.width = 128
+    stream.height = 128
+    stream.pix_fmt = "yuv420p"
+    stream.options = {"crf": "23"}
+
+    for frame in frames:
+        frame = np.array(frame)
+        frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
+        for packet in stream.encode(frame):
+            container.mux(packet)
+
+    for packet in stream.encode():
+        container.mux(packet)
+
+    container.close()
+
+
 class History:
     def __init__(self):
         self.agentview_image_list = []
@@ -207,6 +296,35 @@ class History:
 
         return images, state_vec, state_mask
 
+    def save_video(self, file_path):
+        save_to_video(self.agentview_image_list, file_path)
+
+
+def make_policy():
+    with open("configs/base.yaml", "r") as fp:
+        config = yaml.safe_load(fp)
+
+    # pretrained_model_name_or_path = "robotics-diffusion-transformer/rdt-1b"
+    # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-1b/checkpoint-84000"
+    # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-170m"
+    # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-170m-v2/checkpoint-72000"
+    # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-1b-v3/checkpoint-36000"
+    pretrained_model_name_or_path = "robotics-diffusion-transformer/rdt-1b"
+    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v1/checkpoint-23000"
+
+    pretrained_text_encoder_name_or_path = "google/t5-v1_1-xxl"
+    pretrained_vision_encoder_name_or_path = "google/siglip-so400m-patch14-384"
+    model = create_model(
+        args=config,
+        dtype=torch.bfloat16,
+        pretrained=pretrained_model_name_or_path,
+        pretrained_text_encoder_name_or_path=pretrained_text_encoder_name_or_path,
+        pretrained_vision_encoder_name_or_path=pretrained_vision_encoder_name_or_path,
+        control_frequency=20,
+    )
+
+    return model
+
 
 def main():
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -241,11 +359,57 @@ def main():
     history.add(obs)
     history.add(obs)
 
-    dummy_action = [0.] * 7
-    for step in range(2):
-        history.get_model_inputs()
-        obs, reward, done, info = env.step(dummy_action)
+    horizon = 32
+
+    policy = make_policy()
+
+    replacements = {
+        '_': ' ',
+        '1f': ' ',
+        '4f': ' ',
+        '-': ' ',
+        '50': ' ',
+        '55': ' ',
+        '56': ' ',
+    }
+
+    for key, value in replacements.items():
+        task_description = task_description.replace(key, value)
+    task_description = task_description.strip()
+    task_description = capitalize_and_period(task_description)
+
+    sha1 = hashlib.sha1(task_description.encode()).hexdigest()
+
+    cache_path = Path("outputs") / "cache" / f"text_embeds_{sha1}.pt"
+    if cache_path.exists():
+        text_embeds = torch.load(cache_path, map_location="cpu")
+    else:
+        text_embeds = policy.encode_instruction(task_description)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(text_embeds, cache_path)
+
+    for step in range(360):
+        if step % horizon == 0:
+            images, state_vec, state_mask = history.get_model_inputs()
+            with torch.inference_mode():
+                future_states = policy.step(
+                    state_vec=state_vec[None],
+                    state_mask=state_mask[None],
+                    images=images,
+                    text_embeds=text_embeds,
+                ).squeeze(0).cpu().numpy()
+
+            actions = state_vec_to_action(future_states)
+
+        obs, reward, done, info = env.step(actions[step % horizon])
         history.add(obs)
+
+        if len(info) > 0:
+            print(info)
+            break
+
+    history.save_video(f"outputs/rollout.mp4")
+
     env.close()
 
 
