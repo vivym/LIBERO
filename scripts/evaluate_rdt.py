@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 from pathlib import Path
 
 import av
@@ -318,7 +319,7 @@ def make_policy():
     # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-170m-v2/checkpoint-72000"
     # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-1b-v3/checkpoint-36000"
     pretrained_model_name_or_path = "robotics-diffusion-transformer/rdt-1b"
-    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v1/checkpoint-5000"
+    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v1/checkpoint-10000"
 
     pretrained_text_encoder_name_or_path = "google/t5-v1_1-xxl"
     pretrained_vision_encoder_name_or_path = "google/siglip-so400m-patch14-384"
@@ -335,97 +336,119 @@ def make_policy():
 
 
 def main():
+    horizon = 32
+    policy = make_policy()
+
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite_name = "libero_10"
     task_suite = benchmark_dict[task_suite_name]()
 
-    # retrieve a specific task
-    task_id = 2
-    task = task_suite.get_task(task_id)
-    task_name = task.name
-    task_description = task.language
+    succ_list = []
+    for task_id in reversed(range(10)):
+        # retrieve a specific task
+        task = task_suite.get_task(task_id)
+        task_name = task.name
+        task_description = task.language
 
-    task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
+        task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
 
-    print(f"[info] retrieving task {task_id} from suite {task_suite_name}, the " + \
-      f"language instruction is {task_description}, and the bddl file is {task_bddl_file}")
+        print(f"[info] retrieving task {task_id} from suite {task_suite_name}, the " + \
+            f"language instruction is {task_description}, and the bddl file is {task_bddl_file}")
 
-    # step over the environment
-    env_args = {
-        "bddl_file_name": task_bddl_file,
-        "camera_heights": 128,
-        "camera_widths": 128
-    }
-    env = OffScreenRenderEnv(**env_args)
-    env.seed(0)
-    env.reset()
-    init_states = task_suite.get_task_init_states(task_id)
-    init_state_id = 2
-    obs = env.set_init_state(init_states[init_state_id])
+        init_states = task_suite.get_task_init_states(task_id)
+        print("=" * 80)
+        print("Total number of initial states:", len(init_states))
+        print("=" * 80)
 
-    history = History()
+        succ_list_per_task = []
+        for init_state_id in range(min(50, len(init_states))):
+            # step over the environment
+            env_args = {
+                "bddl_file_name": task_bddl_file,
+                "camera_heights": 128,
+                "camera_widths": 128
+            }
+            env = OffScreenRenderEnv(**env_args)
+            env.seed(0)
+            env.reset()
+            obs = env.set_init_state(init_states[init_state_id])
 
-    dummy_action = np.zeros(7)
-    for step in range(20):
-        obs, reward, done, info = env.step(dummy_action)
-        if step >= 18:
-            history.add(obs)
+            history = History()
 
-    horizon = 32
+            dummy_action = np.zeros(7)
+            for step in range(20):
+                obs, reward, done, info = env.step(dummy_action)
+                if step >= 18:
+                    history.add(obs)
 
-    policy = make_policy()
+            replacements = {
+                '_': ' ',
+                '1f': ' ',
+                '4f': ' ',
+                '-': ' ',
+                '50': ' ',
+                '55': ' ',
+                '56': ' ',
+            }
 
-    replacements = {
-        '_': ' ',
-        '1f': ' ',
-        '4f': ' ',
-        '-': ' ',
-        '50': ' ',
-        '55': ' ',
-        '56': ' ',
-    }
+            for key, value in replacements.items():
+                task_description = task_description.replace(key, value)
+            task_description = task_description.strip()
+            task_description = capitalize_and_period(task_description)
 
-    for key, value in replacements.items():
-        task_description = task_description.replace(key, value)
-    task_description = task_description.strip()
-    task_description = capitalize_and_period(task_description)
+            sha1 = hashlib.sha1(task_description.encode()).hexdigest()
 
-    sha1 = hashlib.sha1(task_description.encode()).hexdigest()
+            cache_path = Path("outputs") / "cache" / f"text_embeds_{sha1}.pt"
+            if cache_path.exists():
+                text_embeds = torch.load(cache_path, map_location="cpu")
+            else:
+                text_embeds = policy.encode_instruction(task_description)
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(text_embeds, cache_path)
 
-    cache_path = Path("outputs") / "cache" / f"text_embeds_{sha1}.pt"
-    if cache_path.exists():
-        text_embeds = torch.load(cache_path, map_location="cpu")
-    else:
-        text_embeds = policy.encode_instruction(task_description)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(text_embeds, cache_path)
+            succ = False
+            for step in range(360):
+                if step % horizon == 0:
+                    images, state_vec, state_mask, action_mask = history.get_model_inputs()
+                    with torch.inference_mode():
+                        future_states = policy.step(
+                            state_vec=state_vec[None],
+                            action_mask=action_mask[None],
+                            images=images,
+                            text_embeds=text_embeds,
+                        ).squeeze(0).cpu().numpy()
 
-    succ = False
-    for step in range(360):
-        if step % horizon == 0:
-            images, state_vec, state_mask, action_mask = history.get_model_inputs()
-            with torch.inference_mode():
-                future_states = policy.step(
-                    state_vec=state_vec[None],
-                    action_mask=action_mask[None],
-                    images=images,
-                    text_embeds=text_embeds,
-                ).squeeze(0).cpu().numpy()
+                    actions = state_vec_to_action(future_states)
 
-            actions = state_vec_to_action(future_states)
+                obs, reward, done, info = env.step(actions[step % horizon])
+                history.add(obs)
 
-        obs, reward, done, info = env.step(actions[step % horizon])
-        history.add(obs)
+                if done:
+                    succ = True
+                    break
 
-        if done:
-            succ = True
-            break
+            print(f"Success: {succ}")
+            succ_list_per_task.append(succ)
 
-    print(f"Success: {succ}")
+            save_path = Path("outputs2") / "rollout" / f"{task_id}_{init_state_id}.mp4"
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            history.save_video(str(save_path))
 
-    history.save_video(f"outputs/rollout.mp4")
+            env.close()
 
-    env.close()
+        succ_list.append(succ_list_per_task)
+
+    with open("outputs2/succ_list.json", "w") as f:
+        json.dump(succ_list, f)
+
+    total_succ = 0
+    count = 0
+    for succ_list_per_task in succ_list:
+        print(np.mean(succ_list_per_task))
+        total_succ += np.sum(succ_list_per_task)
+        count += len(succ_list_per_task)
+
+    print(f"Total success rate: {total_succ / count}")
 
 
 if __name__ == "__main__":

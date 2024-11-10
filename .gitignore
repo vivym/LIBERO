@@ -3,7 +3,7 @@
 *pyc
 datasets
 results
-outputs/*
+outputs*/*
 /MUJOCO_LOG.TXT
 wandb
 experiments/
