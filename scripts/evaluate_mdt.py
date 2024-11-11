@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+from datetime import datetime
 from pathlib import Path
 
 import av
@@ -198,7 +199,8 @@ def main():
 
         env.close()
 
-        save_path = Path("outputs") / "rollout" / "mdt" / f"task_{task_id}"
+        time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+        save_path = Path("outputs") / "rollout" / "mdt" / time_str / f"task_{task_id}"
         save_path.mkdir(parents=True, exist_ok=True)
         save_to_videos(save_path, rgb_static_history, rgb_gripper_history, dones)
 
