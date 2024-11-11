@@ -166,9 +166,10 @@ def get_model_from_hydra_configs(train_folder, checkpoint, device_id=0,
 
     # print(cfg)
 
-    data_module = hydra.utils.instantiate(cfg.datamodule, num_workers=0)
-    data_module.prepare_data()
-    data_module.setup()
+    # data_module = hydra.utils.instantiate(cfg.datamodule, num_workers=0)
+    # data_module.prepare_data()
+    # data_module.setup()
+    data_module = None
 
     if device_id != 'cpu':
         device = torch.device(f"cuda:{device_id}")

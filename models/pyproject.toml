@@ -13,7 +13,4 @@ dependencies = [
     "torchsde~=0.2.6",
     "torchdiffeq~=0.2.4",
     "ftfy~=6.2.3",
-    "torch~=2.0.1",
-    "torchaudio",
-    "torchvision",
 ]

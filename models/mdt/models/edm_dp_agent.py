@@ -681,26 +681,18 @@ class EDMDPAgent(pl.LightningModule):
         if 'lang' in goal:
             modality = 'lang'
             if self.use_text_not_embedding:
-                # print(goal.keys())
                 latent_goal = self.language_goal(goal["lang_text"])
-                latent_goal = latent_goal.to(torch.float32)
+                latent_goal = latent_goal.to(self.device, dtype=torch.float32)
             else:
-                latent_goal = self.language_goal(goal["lang"]).unsqueeze(0).to(torch.float32).to(
-                    obs["rgb_obs"]['rgb_static'].device)
+                raise NotImplementedError
         else:
-            modality = 'vis'
-            if self.use_delta_goal:
-                perceptual_goal_emb = self.visual_goal(obs["rgb_obs"]['rgb_static'].squeeze(0))
-            else:
-                perceptual_goal_emb = self.visual_goal(obs["rgb_obs"]['rgb_static'][:, -1]).unsqueeze(1)  # [:, -1])
+            raise NotImplementedError
 
-            latent_goal = perceptual_goal_emb
-
-        rgb_static = obs["rgb_obs"]['rgb_static']
-        rgb_gripper = obs["rgb_obs"]['rgb_gripper']
+        rgb_static = obs["rgb_obs"]["rgb_static"].to(self.device)
+        rgb_gripper = obs["rgb_obs"]["rgb_gripper"].to(self.device)
 
         perceptual_emb = self.embed_visual_obs(rgb_static, rgb_gripper)
-        perceptual_emb['modality'] = modality
+        perceptual_emb["modality"] = modality
 
         act_seq = self.denoise_actions(
             torch.zeros_like(latent_goal).to(latent_goal.device),
@@ -724,13 +716,13 @@ class EDMDPAgent(pl.LightningModule):
             Predicted action.
         """
         if self.rollout_step_counter % self.multistep == 0:
-            pred_action_seq = self(obs, goal)
+            pred_action_seq = self(obs, goal).cpu().numpy()
 
             self.pred_action_seq = pred_action_seq
 
-        current_action = self.pred_action_seq[0, self.rollout_step_counter]
-        if len(current_action.shape) == 2:
-            current_action = einops.rearrange(current_action, 'b d -> b 1 d')
+        current_action = self.pred_action_seq[:, self.rollout_step_counter]
+        # if len(current_action.shape) == 2:
+        #     current_action = einops.rearrange(current_action, 'b d -> b 1 d')
         self.rollout_step_counter += 1
         if self.rollout_step_counter == self.multistep:
             self.rollout_step_counter = 0

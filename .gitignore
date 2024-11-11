@@ -1,7 +1,8 @@
 *~
 .hydra
 *pyc
-./datasets
+/datasets
+/libero/datasets
 results
 outputs*/*
 /MUJOCO_LOG.TXT
@@ -16,3 +17,4 @@ logs/
 *.mp4
 libero.egg-info/
 .vscode/
+*.egg-info/
