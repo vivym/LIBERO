@@ -251,7 +251,7 @@ class History:
         self.eef_pos_list = []
         self.eef_ang_list = []
 
-    def add(self, obs: dict[str, np.ndarray]):
+    def add(self, obs: list[dict[str, np.ndarray]], dones: np.ndarray | None = None):
         agentview_image = obs["agentview_image"]
         robot0_eye_in_hand_image = obs["robot0_eye_in_hand_image"]
         robot0_joint_pos = obs["robot0_joint_pos"]
@@ -305,8 +305,9 @@ class History:
 
         return images, state_vec, state_mask, action_mask
 
-    def save_video(self, file_path):
-        save_to_video(self.agentview_image_list, file_path)
+    def save_video(self, file_dir):
+        # save_to_video(self.agentview_image_list, file_path)
+        ...
 
 
 def make_policy():
@@ -337,7 +338,7 @@ def make_policy():
 
 def main():
     horizon = 32
-    policy = make_policy()
+    # policy = make_policy()
 
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite_name = "libero_10"
@@ -360,6 +361,12 @@ def main():
         print("Total number of initial states:", len(init_states))
         print("=" * 80)
 
+        env_args = {
+            "bddl_file_name": task_bddl_file,
+            "camera_heights": 128,
+            "camera_widths": 128
+        }
+
         env_num = 20
         env = SubprocVectorEnv(
             [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
@@ -381,18 +388,6 @@ def main():
             if step >= 18:
                 history.add(obs)
 
-        replacements = {
-            '_': ' ',
-            '1f': ' ',
-            '4f': ' ',
-            '-': ' ',
-            '50': ' ',
-            '55': ' ',
-            '56': ' ',
-        }
-
-        for key, value in replacements.items():
-            task_description = task_description.replace(key, value)
         task_description = task_description.strip()
         task_description = capitalize_and_period(task_description)
 
@@ -402,77 +397,41 @@ def main():
         if cache_path.exists():
             text_embeds = torch.load(cache_path, map_location="cpu")
         else:
+            # TODO: replace with policy encode_instruction
             text_embeds = policy.encode_instruction(task_description)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(text_embeds, cache_path)
 
+        dones = np.zeros(env_num, dtype=bool)
+
         for step in range(600):
-            ...
+            # TODO: replace with policy step
+            actions = np.zeros((env_num, 7))
 
-        succ_list_per_task = []
-        for init_state_id in range(min(50, len(init_states))):
-            # step over the environment
-            env_args = {
-                "bddl_file_name": task_bddl_file,
-                "camera_heights": 128,
-                "camera_widths": 128
-            }
-            env = OffScreenRenderEnv(**env_args)
-            env.seed(0)
-            env.reset()
-            obs = env.set_init_state(init_states[init_state_id])
+            obs, reward, done, info = env.step(actions)
+            dones = dones | np.array(done)
+            history.add(obs, dones)
 
-            history = History()
+            if np.all(dones):
+                break
 
-            dummy_action = np.zeros(7)
-            for step in range(20):
-                obs, reward, done, info = env.step(dummy_action)
-                if step >= 18:
-                    history.add(obs)
+        succ_list.append(dones)
 
-            succ = False
-            for step in range(360):
-                if step % horizon == 0:
-                    images, state_vec, state_mask, action_mask = history.get_model_inputs()
-                    with torch.inference_mode():
-                        future_states = policy.step(
-                            state_vec=state_vec[None],
-                            action_mask=action_mask[None],
-                            images=images,
-                            text_embeds=text_embeds,
-                        ).squeeze(0).cpu().numpy()
+        env.close()
 
-                    actions = state_vec_to_action(future_states)
+        save_path = Path("outputs") / "rollout"
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        history.save_video(str(save_path))
 
-                obs, reward, done, info = env.step(actions[step % horizon])
-                history.add(obs)
-
-                if done:
-                    succ = True
-                    break
-
-            print(f"Success: {succ}")
-            succ_list_per_task.append(succ)
-
-            save_path = Path("outputs2") / "rollout" / f"{task_id}_{init_state_id}.mp4"
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            history.save_video(str(save_path))
-
-            env.close()
-
-        succ_list.append(succ_list_per_task)
-
-    with open("outputs2/succ_list.json", "w") as f:
+    with open("outputs/succ_list.json", "w") as f:
         json.dump(succ_list, f)
 
-    total_succ = 0
-    count = 0
-    for succ_list_per_task in succ_list:
-        print(np.mean(succ_list_per_task))
-        total_succ += np.sum(succ_list_per_task)
-        count += len(succ_list_per_task)
+    all_succ = np.array(succ_list)
 
-    print(f"Total success rate: {total_succ / count}")
+    print("Total success rate:", np.mean(all_succ))
+
+    for i, succ in enumerate(all_succ):
+        print(f"Task {i} success rate:", np.mean(succ))
 
 
 if __name__ == "__main__":
