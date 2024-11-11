@@ -1,0 +1,19 @@
+# pyproject.toml
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdt"
+version = "0.1"
+dependencies = [
+    # e.g., "numpy >= 1.18.5"
+    "pytorch-lightning==1.9.5",
+    "pyhash",
+    "torchsde~=0.2.6",
+    "torchdiffeq~=0.2.4",
+    "ftfy~=6.2.3",
+    "torch~=2.0.1",
+    "torchaudio",
+    "torchvision",
+]
