@@ -27,7 +27,7 @@ depth_tactile (160, 120, 2) float32
     root_path = Path("libero/datasets")
     save_root_path = Path("libero/datasets/calvin_format")
 
-    for split, target_split in [("libero_10", "validation"), ("libero_90", "training")]:
+    for split, target_split in [("libero_90", "validation"), ("libero_90", "training")]:
         split_dir = root_path / split
 
         print("=" * 80)
@@ -42,7 +42,22 @@ depth_tactile (160, 120, 2) float32
         ep_start_end_ids = []
         instrs = []
 
+        scene_paths = []
         for scene_path in split_dir.glob("*.hdf5"):
+            instruction = scene_path.stem
+
+            instruction = instruction.split("_")[:2]
+
+            if instruction[0] == "KITCHEN" and instruction[1] == "SCENE4":
+                if target_split == "validation":
+                    scene_paths.append(scene_path)
+            else:
+                if target_split == "training":
+                    scene_paths.append(scene_path)
+
+        print(scene_paths)
+
+        for scene_path in scene_paths:
             instruction = scene_path.stem
 
             instruction = instruction.split("_")
@@ -84,7 +99,7 @@ depth_tactile (160, 120, 2) float32
 
                         sample = {
                             "action": actions[i],
-                            "rel_action": actions[i],
+                            "rel_actions": actions[i],
                             "rgb_static": obs["agentview_rgb"][i],
                             "rgb_gripper": obs["eye_in_hand_rgb"][i],
                             "robot_obs": robot_obs[i],

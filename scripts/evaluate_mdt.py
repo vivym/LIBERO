@@ -58,15 +58,15 @@ def save_to_videos(
     rgb_gripper_history: list[list[np.ndarray]],
     dones: np.ndarray,
 ):
-    rgb_static_history = np.array(rgb_static_history)
-    rgb_gripper_history = np.array(rgb_gripper_history)
-
-    for env_idx in range(rgb_static_history.shape[1]):
+    for env_idx in tqdm(range(len(rgb_static_history[0])), desc="Saving videos"):
         done = dones[env_idx].item()
         suffix = "success" if done else "fail"
 
-        save_to_video(rgb_static_history[:, env_idx], save_dir / f"rgb_static_{env_idx}_{suffix}.mp4")
-        save_to_video(rgb_gripper_history[:, env_idx], save_dir / f"rgb_gripper_{env_idx}_{suffix}.mp4")
+        rgb_static_history_i = [rgb_static[env_idx] for rgb_static in rgb_static_history]
+        rgb_gripper_history_i = [rgb_gripper[env_idx] for rgb_gripper in rgb_gripper_history]
+
+        save_to_video(rgb_static_history_i, save_dir / f"rgb_static_{env_idx}_{suffix}.mp4")
+        save_to_video(rgb_gripper_history_i, save_dir / f"rgb_gripper_{env_idx}_{suffix}.mp4")
 
 
 def transform_rgb_obs(
@@ -198,6 +198,8 @@ def main():
         succ_list.append(dones)
 
         env.close()
+
+        print("Saving videos...")
 
         time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
         save_path = Path("outputs") / "rollout" / "mdt" / time_str / f"task_{task_id}"
