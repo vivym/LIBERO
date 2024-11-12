@@ -65,8 +65,8 @@ def save_to_videos(
         rgb_static_history_i = [rgb_static[env_idx] for rgb_static in rgb_static_history]
         rgb_gripper_history_i = [rgb_gripper[env_idx] for rgb_gripper in rgb_gripper_history]
 
-        save_to_video(rgb_static_history_i, save_dir / f"rgb_static_{env_idx}_{suffix}.mp4")
-        save_to_video(rgb_gripper_history_i, save_dir / f"rgb_gripper_{env_idx}_{suffix}.mp4")
+        save_to_video(rgb_static_history_i, save_dir / f"rgb_static_{env_idx:02d}_{suffix}.mp4")
+        save_to_video(rgb_gripper_history_i, save_dir / f"rgb_gripper_{env_idx:02d}_{suffix}.mp4")
 
 
 def transform_rgb_obs(
@@ -122,6 +122,8 @@ def main():
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite_name = "libero_10"
     task_suite = benchmark_dict[task_suite_name]()
+
+    time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     succ_list = []
     for task_id in range(10):
@@ -184,6 +186,9 @@ def main():
                     },
                 )
 
+            gripper_open = actions[:, -1:] > 0
+            actions = np.concatenate([actions[:, :-1], gripper_open], axis=-1)
+
             obs, reward, done, info = env.step(actions)
             dones = dones | np.array(done)
             rgb_static_history.append([o["agentview_image"] for o in obs])
@@ -195,13 +200,11 @@ def main():
 
         print("Task done:", dones)
 
-        succ_list.append(dones)
+        succ_list.append(dones.tolist())
 
         env.close()
 
         print("Saving videos...")
-
-        time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
         save_path = Path("outputs") / "rollout" / "mdt" / time_str / f"task_{task_id}"
         save_path.mkdir(parents=True, exist_ok=True)
         save_to_videos(save_path, rgb_static_history, rgb_gripper_history, dones)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
 import av
@@ -11,6 +12,7 @@ import numpy as np
 import torch
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
+from tqdm import tqdm
 
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv
@@ -193,8 +195,6 @@ def state_vec_to_action(state_vec: np.ndarray) -> np.ndarray:
     for i, key in enumerate(arm_format.split(",")):
         arm_concat[:, i] = state_vec[:, STATE_VEC_IDX_MAPPING[key]]
 
-    print("arm_concat", arm_concat[0])
-
     eef_delta_pos = arm_concat[:, 0:3]
     eef_delta_ang = arm_concat[:, 3:6]
     gripper_open = (arm_concat[:, 6:7]) * 2 - 1
@@ -251,62 +251,76 @@ class History:
         self.eef_pos_list = []
         self.eef_ang_list = []
 
-    def add(self, obs: dict[str, np.ndarray]):
-        agentview_image = obs["agentview_image"]
-        robot0_eye_in_hand_image = obs["robot0_eye_in_hand_image"]
-        robot0_joint_pos = obs["robot0_joint_pos"]
-        robot0_gripper_qpos = obs["robot0_gripper_qpos"]
-        robot0_eef_pos = obs["robot0_eef_pos"]
-        robot0_eef_quat = obs["robot0_eef_quat"]
+    def add(self, obs: list[dict[str, np.ndarray]]):
+        agentview_image = [o["agentview_image"] for o in obs]
+        robot0_eye_in_hand_image = [o["robot0_eye_in_hand_image"] for o in obs]
+        robot0_joint_pos = np.array([o["robot0_joint_pos"] for o in obs])
+        robot0_gripper_qpos = np.array([o["robot0_gripper_qpos"] for o in obs])
+        robot0_eef_pos = np.array([o["robot0_eef_pos"] for o in obs])
+        robot0_eef_quat = np.array([o["robot0_eef_quat"] for o in obs])
 
-        gripper_open = robot0_gripper_qpos[0] / 0.05184841017638091
+        gripper_open = robot0_gripper_qpos[:, 0:1] / 0.05184841017638091
         gripper_open = np.clip(gripper_open, 0, 1)
 
         eef_ang = R.from_quat(robot0_eef_quat).as_matrix()
         eef_ang = rotation_matrix_to_ortho6d(eef_ang)
 
-        self.agentview_image_list.append(Image.fromarray(agentview_image))
-        self.eye_in_hand_rgb_list.append(Image.fromarray(robot0_eye_in_hand_image))
+        self.agentview_image_list.append([Image.fromarray(x) for x in agentview_image])
+        self.eye_in_hand_rgb_list.append([Image.fromarray(x) for x in robot0_eye_in_hand_image])
         self.qpos_list.append(robot0_joint_pos.astype(np.float32))
         self.gripper_open_list.append(gripper_open)
         self.eef_pos_list.append(robot0_eef_pos.astype(np.float32))
         self.eef_ang_list.append(eef_ang.astype(np.float32))
 
     def get_model_inputs(self):
-        images = [
-            self.agentview_image_list[-2],
-            self.eye_in_hand_rgb_list[-2],
-            None,
-            self.agentview_image_list[-1],
-            self.eye_in_hand_rgb_list[-1],
-            None,
-        ]
-
         qpos = self.qpos_list[-1]
         gripper_open = self.gripper_open_list[-1]
         eef_pos = self.eef_pos_list[-1]
         eef_ang = self.eef_ang_list[-1]
 
-        arm_concat = np.concatenate([qpos, [gripper_open], eef_pos, eef_ang])
+        arm_concat = np.concatenate([qpos, gripper_open, eef_pos, eef_ang], axis=-1)
         arm_format = "arm_joint_0_pos,arm_joint_1_pos,arm_joint_2_pos,arm_joint_3_pos,arm_joint_4_pos,arm_joint_5_pos,arm_joint_6_pos,gripper_open,eef_pos_x,eef_pos_y,eef_pos_z,eef_angle_0,eef_angle_1,eef_angle_2,eef_angle_3,eef_angle_4,eef_angle_5"
 
-        state_vec = np.zeros(STATE_VEC_LEN, dtype=np.float32)
-        state_mask = np.zeros(STATE_VEC_LEN, dtype=np.float32)
+        batch_size = arm_concat.shape[0]
+
+        state_vec = np.zeros((batch_size, STATE_VEC_LEN), dtype=np.float32)
+        state_mask = np.zeros((batch_size, STATE_VEC_LEN), dtype=np.float32)
 
         for i, key in enumerate(arm_format.split(",")):
-            state_vec[STATE_VEC_IDX_MAPPING[key]] = arm_concat[i]
-            state_mask[STATE_VEC_IDX_MAPPING[key]] = 1
+            state_vec[:, STATE_VEC_IDX_MAPPING[key]] = arm_concat[:, i]
+            state_mask[:, STATE_VEC_IDX_MAPPING[key]] = 1
 
-        action_mask = np.zeros(STATE_VEC_LEN, dtype=np.float32)
+        action_mask = np.zeros((batch_size, STATE_VEC_LEN), dtype=np.float32)
         arm_format = "eef_vel_x,eef_vel_y,eef_vel_z,eef_angular_vel_roll,eef_angular_vel_pitch,eef_angular_vel_yaw,gripper_open"
 
         for key in arm_format.split(","):
-            action_mask[STATE_VEC_IDX_MAPPING[key]] = 1
+            action_mask[:, STATE_VEC_IDX_MAPPING[key]] = 1
+
+        images = [
+            [
+                self.agentview_image_list[-2][i],
+                self.eye_in_hand_rgb_list[-2][i],
+                None,
+                self.agentview_image_list[-1][i],
+                self.eye_in_hand_rgb_list[-1][i],
+                None,
+            ]
+            for i in range(batch_size)
+        ]
 
         return images, state_vec, state_mask, action_mask
 
-    def save_video(self, file_path):
-        save_to_video(self.agentview_image_list, file_path)
+    def save_video(self, save_dir: Path, dones: list[bool]):
+        batch_size = len(dones)
+
+        for i in tqdm(range(batch_size), desc="Saving videos"):
+            done = dones[i]
+            suffix = "success" if done else "fail"
+            frames = [
+                self.agentview_image_list[j][i]
+                for j in range(len(self.agentview_image_list))
+            ]
+            save_to_video(frames, save_dir / f"{i:02d}_{suffix}.mp4")
 
 
 def make_policy():
@@ -319,7 +333,7 @@ def make_policy():
     # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-170m-v2/checkpoint-72000"
     # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-1b-v3/checkpoint-36000"
     pretrained_model_name_or_path = "robotics-diffusion-transformer/rdt-1b"
-    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v1/checkpoint-10000"
+    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v2/checkpoint-17000"
 
     pretrained_text_encoder_name_or_path = "google/t5-v1_1-xxl"
     pretrained_vision_encoder_name_or_path = "google/siglip-so400m-patch14-384"
@@ -340,11 +354,14 @@ def main():
     policy = make_policy()
 
     benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite_name = "libero_10"
+    task_suite_name = "libero_90"
     task_suite = benchmark_dict[task_suite_name]()
 
+    time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+
     succ_list = []
-    for task_id in range(10):
+    # for task_id in range(22, 28):
+    for task_id in range(90):
         # retrieve a specific task
         task = task_suite.get_task(task_id)
         task_name = task.name
@@ -360,7 +377,13 @@ def main():
         print("Total number of initial states:", len(init_states))
         print("=" * 80)
 
-        env_num = 20
+        env_args = {
+            "bddl_file_name": task_bddl_file,
+            "camera_heights": 128,
+            "camera_widths": 128
+        }
+
+        env_num = 4
         env = SubprocVectorEnv(
             [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
         )
@@ -372,14 +395,12 @@ def main():
 
         env.set_init_state(init_states)
 
-        # TODO: policy reset
-
         history = History()
         dummy_action = np.zeros((env_num, 7))
         for step in range(20):
             obs, reward, done, info = env.step(dummy_action)
             if step >= 18:
-                history.add(obs)
+                history.add(obs.tolist())
 
         replacements = {
             '_': ' ',
@@ -400,80 +421,64 @@ def main():
 
         cache_path = Path("outputs") / "cache" / f"text_embeds_{sha1}.pt"
         if cache_path.exists():
-            text_embeds = torch.load(cache_path, map_location="cpu")
+            text_embeds: torch.Tensor = torch.load(cache_path, map_location="cpu")
         else:
-            text_embeds = policy.encode_instruction(task_description)
+            text_embeds: torch.Tensor = policy.encode_instruction(task_description)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(text_embeds, cache_path)
 
+        dones = np.zeros(env_num, dtype=bool)
+
+        print("Text embeds shape:", text_embeds.shape)
+        text_embeds = text_embeds.repeat(env_num, 1, 1)
+
         for step in range(600):
-            ...
+            if step % horizon == 0:
+                images, state_vec, state_mask, action_mask = history.get_model_inputs()
+                with torch.inference_mode():
+                    future_states: np.ndarray = policy.step(
+                        state_vec=state_vec,
+                        action_mask=action_mask,
+                        images=images,
+                        text_embeds=text_embeds,
+                    ).cpu().numpy()
 
-        succ_list_per_task = []
-        for init_state_id in range(min(50, len(init_states))):
-            # step over the environment
-            env_args = {
-                "bddl_file_name": task_bddl_file,
-                "camera_heights": 128,
-                "camera_widths": 128
-            }
-            env = OffScreenRenderEnv(**env_args)
-            env.seed(0)
-            env.reset()
-            obs = env.set_init_state(init_states[init_state_id])
+                batch_size = future_states.shape[0]
+                future_states = future_states.reshape(-1, *future_states.shape[2:])
+                actions = state_vec_to_action(future_states)
+                actions = actions.reshape(batch_size, -1, *actions.shape[1:])
 
-            history = History()
+            obs, reward, done, info = env.step(actions[:, step % horizon])
+            dones = dones | np.array(done)
+            history.add(obs.tolist())
 
-            dummy_action = np.zeros(7)
-            for step in range(20):
-                obs, reward, done, info = env.step(dummy_action)
-                if step >= 18:
-                    history.add(obs)
+            if np.all(dones):
+                print("All environments are done.")
+                break
 
-            succ = False
-            for step in range(360):
-                if step % horizon == 0:
-                    images, state_vec, state_mask, action_mask = history.get_model_inputs()
-                    with torch.inference_mode():
-                        future_states = policy.step(
-                            state_vec=state_vec[None],
-                            action_mask=action_mask[None],
-                            images=images,
-                            text_embeds=text_embeds,
-                        ).squeeze(0).cpu().numpy()
+        print("Task done:", dones.tolist())
 
-                    actions = state_vec_to_action(future_states)
+        succ_list.append(dones.tolist())
 
-                obs, reward, done, info = env.step(actions[step % horizon])
-                history.add(obs)
+        env.close()
 
-                if done:
-                    succ = True
-                    break
+        print("Saving videos...")
 
-            print(f"Success: {succ}")
-            succ_list_per_task.append(succ)
+        save_path = Path("outputs") / "rollout" / "rdt" / time_str / f"task_{task_id}"
+        save_path.mkdir(parents=True, exist_ok=True)
+        history.save_video(save_path, dones.tolist())
 
-            save_path = Path("outputs2") / "rollout" / f"{task_id}_{init_state_id}.mp4"
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            history.save_video(str(save_path))
-
-            env.close()
-
-        succ_list.append(succ_list_per_task)
-
-    with open("outputs2/succ_list.json", "w") as f:
+    with open("outputs/succ_list.json", "w") as f:
         json.dump(succ_list, f)
 
-    total_succ = 0
-    count = 0
-    for succ_list_per_task in succ_list:
-        print(np.mean(succ_list_per_task))
-        total_succ += np.sum(succ_list_per_task)
-        count += len(succ_list_per_task)
+    all_succ = np.array(succ_list)
 
-    print(f"Total success rate: {total_succ / count}")
+    print("Total success rate:", np.mean(all_succ))
+
+    for i, succ in enumerate(all_succ):
+        print(f"Task {i} success rate:", np.mean(succ))
 
 
 if __name__ == "__main__":
+    os.environ["TOKENIZERS_PARALLELISM"] = "False"
     main()
