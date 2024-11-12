@@ -333,7 +333,7 @@ def make_policy():
     # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-170m-v2/checkpoint-72000"
     # pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-calvin-1b-v3/checkpoint-36000"
     pretrained_model_name_or_path = "robotics-diffusion-transformer/rdt-1b"
-    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v2/checkpoint-17000"
+    pretrained_model_name_or_path = "/mnt/dongxu-fs2/data-hdd/mingyang/projs/RoboticsDiffusionTransformer/checkpoints/rdt-finetune-libero-1b-v2/checkpoint-10000"
 
     pretrained_text_encoder_name_or_path = "google/t5-v1_1-xxl"
     pretrained_vision_encoder_name_or_path = "google/siglip-so400m-patch14-384"
@@ -360,8 +360,8 @@ def main():
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     succ_list = []
-    # for task_id in range(22, 28):
-    for task_id in range(90):
+    for task_id in range(22, 28):
+    # for task_id in range(90):
         # retrieve a specific task
         task = task_suite.get_task(task_id)
         task_name = task.name
@@ -383,7 +383,7 @@ def main():
             "camera_widths": 128
         }
 
-        env_num = 4
+        env_num = 20
         env = SubprocVectorEnv(
             [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
         )
@@ -432,7 +432,7 @@ def main():
         print("Text embeds shape:", text_embeds.shape)
         text_embeds = text_embeds.repeat(env_num, 1, 1)
 
-        for step in range(600):
+        for step in tqdm(range(600)):
             if step % horizon == 0:
                 images, state_vec, state_mask, action_mask = history.get_model_inputs()
                 with torch.inference_mode():
@@ -468,7 +468,7 @@ def main():
         save_path.mkdir(parents=True, exist_ok=True)
         history.save_video(save_path, dones.tolist())
 
-    with open("outputs/succ_list.json", "w") as f:
+    with open(f"outputs/rollout/rdt/{time_str}/succ_list.json", "w") as f:
         json.dump(succ_list, f)
 
     all_succ = np.array(succ_list)

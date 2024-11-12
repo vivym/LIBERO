@@ -120,13 +120,13 @@ def main():
     policy.to(device)
 
     benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite_name = "libero_10"
+    task_suite_name = "libero_90"
     task_suite = benchmark_dict[task_suite_name]()
 
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     succ_list = []
-    for task_id in range(10):
+    for task_id in range(1, 90):
         # retrieve a specific task
         task = task_suite.get_task(task_id)
         task_description: str = task.language
@@ -186,7 +186,9 @@ def main():
                     },
                 )
 
-            gripper_open = actions[:, -1:] > 0
+            gripper_open = actions[:, -1:]
+            gripper_open[gripper_open <= 0] = -1
+            gripper_open[gripper_open > 0] = 1
             actions = np.concatenate([actions[:, :-1], gripper_open], axis=-1)
 
             obs, reward, done, info = env.step(actions)
@@ -209,7 +211,7 @@ def main():
         save_path.mkdir(parents=True, exist_ok=True)
         save_to_videos(save_path, rgb_static_history, rgb_gripper_history, dones)
 
-    with open("outputs/succ_list.json", "w") as f:
+    with open(f"outputs/rollout/mdt/{time_str}/succ_list.json", "w") as f:
         json.dump(succ_list, f)
 
     all_succ = np.array(succ_list)
