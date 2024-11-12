@@ -93,7 +93,7 @@ def transform_rgb_obs(
     rgb_static = rgb_static.flatten(0, 1)
     rgb_gripper = rgb_gripper.flatten(0, 1)
 
-    transform = T.Compose([
+    transform1 = T.Compose([
         T.Resize(224),
         T.Normalize(
             mean=[0.48145466, 0.4578275, 0.40821073],
@@ -101,8 +101,17 @@ def transform_rgb_obs(
         ),
     ])
 
-    rgb_static = transform(rgb_static)
-    rgb_gripper = transform(rgb_gripper)
+    transform2 = T.Compose([
+        T.Resize(84),
+        T.Normalize(
+            mean=[0.48145466, 0.4578275, 0.40821073],
+            std=[0.26862954, 0.26130258, 0.27577711],
+        ),
+    ])
+
+
+    rgb_static = transform1(rgb_static)
+    rgb_gripper = transform2(rgb_gripper)
 
     rgb_static = rgb_static.view(batch_size, -1, *rgb_static.shape[1:])
     rgb_gripper = rgb_gripper.view(batch_size, -1, *rgb_gripper.shape[1:])
@@ -126,7 +135,7 @@ def main():
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     succ_list = []
-    for task_id in range(1, 90):
+    for task_id in range(2, 90):
         # retrieve a specific task
         task = task_suite.get_task(task_id)
         task_description: str = task.language
@@ -174,6 +183,10 @@ def main():
         task_description = task_description.strip()
         task_description = capitalize_and_period(task_description)
 
+        print("+" * 80)
+        print("task_description", task_description)
+        print("+" * 80)
+
         dones = np.zeros(env_num, dtype=bool)
 
         for step in tqdm(range(600)):
@@ -199,6 +212,9 @@ def main():
             if np.all(dones):
                 print("All environments are done.")
                 break
+
+            if np.any(dones):
+                print("Some environments are done.", np.sum(dones))
 
         print("Task done:", dones)
 

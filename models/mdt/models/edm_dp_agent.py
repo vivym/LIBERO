@@ -85,7 +85,7 @@ class EDMDPAgent(pl.LightningModule):
         self.language_goal = hydra.utils.instantiate(language_goal) if language_goal else None
         # policy network
         self.model = hydra.utils.instantiate(model).to(self.device)
-        self.modality_scope = "vis"
+        self.modality_scope = "lang"
         self.optimizer_config = optimizer
         self.lr_scheduler = lr_scheduler
         self.save_hyperparameters()
@@ -681,6 +681,7 @@ class EDMDPAgent(pl.LightningModule):
         if 'lang' in goal:
             modality = 'lang'
             if self.use_text_not_embedding:
+                print("goal", goal["lang_text"])
                 latent_goal = self.language_goal(goal["lang_text"])
                 latent_goal = latent_goal.to(self.device, dtype=torch.float32)
             else:

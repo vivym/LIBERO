@@ -94,9 +94,9 @@ depth_tactile (160, 120, 2) float32
 
                     ep_start_end_ids.append((idx, idx + num_frames - 1))
 
-                    for i in range(num_frames):
-                        instrs.append(instruction)
+                    instrs.append(instruction)
 
+                    for i in range(num_frames):
                         sample = {
                             "action": actions[i],
                             "rel_actions": actions[i],
